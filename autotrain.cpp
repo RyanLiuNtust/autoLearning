@@ -22,7 +22,7 @@
 #include <fstream>
 #include <opencv.hpp>
 #include <lexical_cast.hpp>
-#include "../../../include/include/FileSystem.h"
+#include "FileSystem.h"
 
 struct ProcessWindowsInfo
 {
@@ -71,7 +71,6 @@ bool executeCommandLine(std::vector<std::string> cmdLine) {
 		ZeroMemory( &startupinfo, sizeof(startupinfo) );
 		startupinfo.cb = sizeof(startupinfo);
 		ZeroMemory( &pi, sizeof(pi) );
-		std::cout << it->c_str() << std::endl;
 		
 		if( !CreateProcess(NULL,   // No module name (use command line)
 			const_cast<char *>(it->c_str()),        // Command line
@@ -98,43 +97,48 @@ bool executeCommandLine(std::vector<std::string> cmdLine) {
 	}
 }
 
+static cv::Scalar randomColor( cv::RNG& rng )
+{
+	int icolor = (unsigned) rng;
+	return cv::Scalar( icolor&255, (icolor>>8)&255, (icolor>>16)&255 );
+}
+
 cv::Mat rotate(cv::Mat src, double angle, double scale = 1, bool isWidthMean = false) {
 	double radius = angle * CV_PI/180;
 	double alpha = cos(radius) * scale;
 	double beta = sin(radius) * scale;
 	int nCols = static_cast<int>(src.cols * fabs(alpha) + src.rows * fabs(beta));
 	int nRows = static_cast<int>(src.cols * fabs(beta) + src.rows * fabs(alpha));
-
     cv::Point2f center(src.cols/2., src.rows/2.);
     cv::Mat m = cv::getRotationMatrix2D(center, angle, 1.0);
 	m.ptr<double>(0)[2] +=  static_cast<int>((nCols - src.cols)/2);
 	m.ptr<double>(1)[2] +=	static_cast<int>((nRows - src.rows)/2);
 	
-	cv::Scalar mean(0);
+	cv::Scalar bg(0, 0, 0);
 	if(isWidthMean) {
-		 mean = cv::mean(src);
+		 bg = cv::mean(src);
 	}
-	
 	cv::Mat dst;
-    warpAffine(src, dst, m, cv::Size(nCols, nRows), 1, 0, mean);
+    warpAffine(src, dst, m, cv::Size(nCols, nRows), 1, 0, bg);
     return dst;
 }
 
-void synthesisData(std::vector<std::string>posImgs, std::string synDir, double syn_angle = 15, double scale = 1) {
+void synthesisData(std::vector<std::string>posImgs, std::string synDir, int &syn_w, int &syn_h, double syn_angle = 0, double scale = 1) {
 	FileSystem filesystem;
-	std::cout << synDir << std::endl;
 	filesystem.createFolder(synDir);
 	int index = 0;
+	
 	for(std::vector<std::string>::iterator it = posImgs.begin(); it != posImgs.end(); it++) {
 		std::string filename = synDir + boost::lexical_cast<std::string>(index++) + ".bmp";
 		cv::Mat src = cv::imread(*it);
-		cv::Mat dst(src.size(), src.type());
 		cv::Mat rot = rotate(src, syn_angle, scale, true);
+		syn_w = rot.cols;
+		syn_h = rot.rows;
 		cv::imwrite(filename, rot);
 	}
 }
 
-void train(std::string vecname, int numPos, int numNeg, int numDivTrain, int w, int h) {
+void train(std::string vecname, int numPos, int numNeg, int numDivTrain, int numStages, int w, int h) {
 	std::vector<std::string> cmdLine(numDivTrain);
 	int numIntervalPos = (numPos-150)/numDivTrain;
 	FileSystem filesystem;
@@ -144,10 +148,11 @@ void train(std::string vecname, int numPos, int numNeg, int numDivTrain, int w, 
 									 boost::lexical_cast<std::string>(h) + "_" +
 									 boost::lexical_cast<std::string>((i+1)*numIntervalPos);
 		filesystem.createFolder(cascadeFolder);
-		cmdLine[i] = "opencv_traincascade.exe -bg neg.txt -maxFalseAlarmRate 0.45 -vec " + vecname + 
+		cmdLine[i] = "opencv_traincascade.exe -bg neg.txt -minHitRate 0.9965 -maxFalseAlarmRate 0.44 -precalcValBufSize 450 -precalcIdxBufSize 200 -vec " + vecname + 
 					 " -data " + cascadeFolder +
 					 " -numPos " + boost::lexical_cast<std::string> ((i+1)*numIntervalPos) +
 					 " -numNeg " + boost::lexical_cast<std::string> (numNeg) +
+					 " -numStages " + boost::lexical_cast<std::string> (numStages) +
 					 " -w " + boost::lexical_cast<std::string>(w) +
 					 " -h " + boost::lexical_cast<std::string>(h);
 		std::cout << cmdLine[i] << std::endl;
@@ -162,7 +167,8 @@ int main(int argc, char *argv[])
 			  << "Usuage: auto_adaboost.exe\n"
 			  << "[-pos <postive_collection_directory>]\n"
 			  << "[-neg <negative_collection_directory>]\n"
-			  << "[-vec <output_vec_directory>]\n"
+			  << "[-vec <vec_file_name>]\n"
+			  << "[-numStage <number_of_stages=15>]\n"
 			  << "[-w <sample_width = 24>]\n[-h <sample_height = 24>]\n"
 			  << "----------synthesis paramters----------\n"
 			  << "[-rot <synthesis_rotation_angle>]\n"
@@ -170,10 +176,10 @@ int main(int argc, char *argv[])
 			  << "[-synDir <syntehsis_data_collection_directory>\n]"
 			  << "----------optimal paramters----------\n"
 			  << "[-opt <optimize_result>]\n"
-			  << "[-num <number_of_divided_training = 4>]";
+			  << "[-num <number_of_divided_training = 4>]\n";
 			  
 	}
-	std::string vecDir;
+	std::string vecFilename;
 	std::string posColDir;
 	std::string negColDir;
 	std::string synDir = ".\\syn\\";
@@ -182,6 +188,7 @@ int main(int argc, char *argv[])
 	int w = 24;
 	int h = 24;
 	int numDivTrain = 4;
+	int numStages = 13;
 	bool isSyn = false;
 	bool isOpt = false;
 
@@ -193,7 +200,7 @@ int main(int argc, char *argv[])
 			negColDir = argv[++i];
 		}
 		if(!strcmp(argv[i], "-vec")) {
-			vecDir = argv[++i];
+			vecFilename = argv[++i];
 		}
 		if(!strcmp(argv[i], "-rot")) {
 			rot = atof(argv[++i]);
@@ -216,6 +223,9 @@ int main(int argc, char *argv[])
 		if(!strcmp(argv[i], "-h")) {
 			h = atoi(argv[++i]);
 		}
+		if(!strcmp(argv[i], "-numStages")) {
+			numStages = atoi(argv[++i]);
+		}
 	}
 	
 	FileSystem posFilesystem;
@@ -225,7 +235,10 @@ int main(int argc, char *argv[])
 	FileSystem negFilesystem;
 	std::vector<std::string>negImgs = negFilesystem.getFileList(negColDir, ALL);
 	int numNeg = negImgs.size();
-	
+
+	std::cout << "Number of positive images:" << numPos << std::endl
+			  << "Number of negative images:" << numNeg << std::endl;
+
 	if(numPos == 0) {
 		std::cout << "Do not exist any training samples in current path, pls check whether the path exist\n";
 		system("pause");
@@ -242,7 +255,7 @@ int main(int argc, char *argv[])
 	if(isSyn) {
 		std::string synDirWithRot = synDir + boost::lexical_cast<std::string> (rot) + "\\";
 		std::cout << "creating the synthesis images in " + synDirWithRot << std::endl;
-		synthesisData(posImgs, synDirWithRot, rot);
+		synthesisData(posImgs, synDirWithRot, w, h, rot);
 
 		FileSystem synFilesystem;
 		std::vector<std::string>synImgs = synFilesystem.getFileList(synDirWithRot, ALL);
@@ -254,7 +267,8 @@ int main(int argc, char *argv[])
 	std::string negInfoname = "neg.txt";
 	createInfoList(negInfoname, negImgs, false);
 
-	std::string vecname = vecDir + "/data.vec";
+	std::string vecname = vecFilename + boost::lexical_cast<std::string>(rot) + "_" +
+										boost::lexical_cast<std::string>(numPos) + ".vec";
 	std::ostringstream createsamplesCmd;
 	createsamplesCmd << "opencv_createsamples.exe -info " << posInfoname << " -vec "
 					 << vecname << " -w " << w << " -h " << h << " -num " << numPos;
@@ -263,7 +277,7 @@ int main(int argc, char *argv[])
 	std::cout << createsamplesCmd.str() << std::endl;
 	system(createsamplesCmd.str().c_str());
 	std::cout << "------------- training -------------\n";
-	train(vecname, numPos, numNeg, numDivTrain, w, h);
+	train(vecname, numPos, numNeg, numDivTrain, numStages, w, h);
 	
 	system("pause");
 }
