@@ -1,0 +1,7 @@
+The experiment is used to train the detected model which utilized the harrlike feature combined with adaboost.
+This project will automatically create the vec file, and then automatically create more than two training processing
+which is systematically choosed by heuristic.
+
+e.g.
+./AutoAdaboost.exe -pos data\pos\plate -neg data\neg -vec ./vec -w 32 -h 21 -rot 15 -num 3 -syn
+./AutoAdaboost.exe -syn -rot -15 -pos data\pos\plate -neg data\neg -vec ./vec/plate_ -w 30 -h 14 -num 3
